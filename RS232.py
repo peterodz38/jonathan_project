@@ -1,75 +1,34 @@
-from Tkinter import *
-import ttk
 import serial
 import sys
 import glob
 import re
 import threading
 
+class Nexys_A7_RS232:
 
-# Font configuration
-Font_style='Times'
-xlarge_text_size = 90
-large_text_size = 40
-medium_text_size = 20
-small_text_size = 14
-xsmall_text_size = 4
+    def __init__(self):
 
-def serial_ports():
-    if sys.platform.startswith('win'):
-        ports = ['COM%s' % (i + 1) for i in range(256)]
-    elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
-        # this excludes your current terminal "/dev/tty"
-        ports = glob.glob('/dev/tty[A-Za-z]*')
-    elif sys.platform.startswith('darwin'):
-        ports = glob.glob('/dev/tty.*')
-    else:
-        raise EnvironmentError('Unsupported platform')
+        self.serial_ports = self.__serial_ports()
 
-    result = []
-    for port in ports:
-        try:
-            s = serial.Serial(port)
-            s.close()
-            result.append(port)
-        except (OSError, serial.SerialException):
-            pass
-    return result
+        # serial connection
+        self.__new_connection = None
+        self.__connection_succed = False
 
-class FullscreenWindow:
+        self.__connection_listening_thread = threading.Thread(target = self.__read_byte)
+        self.__connection_listening_thread_running = False
 
-    def connect_disconnect(self):
-        try:
-            if self.connection_succed == False:
-                self.new_connection = serial.Serial(self.COM_ports[self.available_com_combobox.current()])
-                self.new_connection.baudrate = 115200
-                self.new_connection.timeout = 1
-                self.connection_listening_thread_running = True
-                self.connection_listening_thread.start()
-                self.connect_btn.configure(text="Desconectar")
-                self.connection_succed = True
-                self.data_receive_lbl.configure(text='Conexion abierta en ' + self.new_connection.name)
-                self.send_btn.configure(state='active')
-            else:
-                self.connection_listening_thread_running = False
-                self.new_connection.close()
-                self.connect_btn.configure(text="Conectar")
-                self.data_receive_lbl.configure(text='Conexion finalizada')
-                self.connection_succed = False
-                self.send_btn.configure(state='disabled')
-        except serial.SerialException:
-            self.data_receive_lbl.configure(text='Error al conectar en ' + self.new_connection.name)
+        self.__cmd_rcvd = [0,0,0]
+        self.__bytes_counter = 0
 
-    # ***************codigo usado etapa de prueba***********************
-    def send_serial(self):
-        data = self.entry_code.get()
-        #********************* Escritura **************************
-        self.new_connection.write(data)
+        # data managment
+        #self.new_cmd_flag = False
+        self.cmd_rcvd_fifo = FIFO()
+        self.__bytes_counter = 0
 
-    #********************** Hilo de Lectura ***************************
-    def read_byte (self):
-        while self.connection_listening_thread_running:
-            reading = self.new_connection.read()
+
+    def __read_byte (self):
+        while self.__connection_listening_thread_running:
+            reading = self.__new_connection.read()
             
             if reading != '':
                 self.__cmd_rcvd[self.__bytes_counter] = reading
@@ -77,52 +36,101 @@ class FullscreenWindow:
                 
                 if self.__bytes_counter == 3:
                     self.__bytes_counter = 0
-                    self.decode_cmd(self.__cmd_rcvd)
-                    
-                #self.data_receive_lbl.configure(text= "Temp" + str(reading))
-    # ******************************************************************
+                    self.cmd_rcvd_fifo.insert(self.__cmd_rcvd)
 
-    def decode_cmd (self, cmd):
-        if cmd[0] == 'T':
-            temp = ord(cmd[1]) + ord(cmd[2]) * 0.0078
-            #print str(temp) + '\n'
-        if cmd[0] == 'S':
-            pass
-            #print 'S' + str(ord(cmd[1])) + str(ord(cmd[2])) + '\n'
+            #self.new_cmd_flag = True
+
+    def send_cmd (self, cmd):
+        self.__new_connection.write(cmd)
+
+
+    def connect_disconnect (self, serial_port):
+        try:
+            if self.__connection_succed == False:
+                self.__new_connection = serial.Serial(serial_port)
+                self.__new_connection.baudrate = 115200
+                self.__new_connection.timeout = 1
+                self.__connection_listening_thread_running = True
+                self.__connection_listening_thread.start()
+                self.__connection_succed = True
+                return True
+            else:
+                self.__connection_listening_thread_running = False
+                self.__new_connection.close()
+                self.__connection_succed = False
+                return True
+        except serial.SerialException:
+            return False
+
+
+    def __serial_ports (self):
+        if sys.platform.startswith('win'):
+            ports = ['COM%s' % (i + 1) for i in range(256)]
+        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
+            # this excludes your current terminal "/dev/tty"
+            ports = glob.glob('/dev/tty[A-Za-z]*')
+        elif sys.platform.startswith('darwin'):
+            ports = glob.glob('/dev/tty.*')
+        else:
+            raise EnvironmentError('Unsupported platform')
+
+        result = []
+        for port in ports:
+            try:
+                s = serial.Serial(port)
+                s.close()
+                result.append(port)
+            except (OSError, serial.SerialException):
+                pass
+        return result
+
+    def scan_serial_ports (self):
+        self.serial_ports = self.__serial_ports()
+        return self.serial_ports
+
+    def shut_down (self):
+        self.cmd_rcvd_fifo.fifo_stop()
+        if self.__connection_succed:
+            self.__new_connection.close()
+            self.__connection_succed = False
+            self.__connection_listening_thread_running = False
         
-    
+
+class FIFO:
+
     def __init__(self):
-        self.tk = Tk()
-        self.tk.configure(background='gray')
-        self.tk.title("RS232_Test")
-        self.topFrame = Frame(self.tk)
-        self.topFrame.pack(side = TOP, fill = BOTH, expand = YES)
-        self.bottomFrame = Frame(self.tk)
-        self.bottomFrame.pack(side = BOTTOM, fill = BOTH, expand = YES)
-        self.COM_ports = serial_ports()
-        self.available_com_combobox = ttk.Combobox(self.topFrame, width=20, font=(Font_style, small_text_size), values=self.COM_ports)
-        self.available_com_combobox.grid(column=0,row=0,padx=10)
-        self.entry_code = Entry(self.topFrame, width=20, font=(Font_style, small_text_size), fg="black", bg="white")
-        self.entry_code.grid(column=0,row=1,stick='nswe',padx=10, pady=10)
-        self.entry_code.insert(0,'')
-        self.connect_btn = Button (self.topFrame, font=(Font_style, small_text_size), fg="black", bg="white", text="Conectar",
-                                        width=10, command=self.connect_disconnect)
-        self.connect_btn.grid(column=1,row=0,stick='nswe',padx=10, pady=10)
-        self.send_btn = Button (self.topFrame, font=(Font_style, small_text_size), fg="black", bg="white", text="Enviar",
-                                command=self.send_serial, state='disabled')
-        self.send_btn.grid(column=1,row=1,stick='nswe',padx=10, pady=10)
-        self.data_receive_lbl = Label(self.tk, width=20, font=(Font_style, small_text_size), fg="black", bg="white")
-        self.data_receive_lbl.grid(column=0,row=2,stick='nswe',columnspan=2,padx=10,pady=10)
 
-        self.new_connection = None
-        self.connection_succed = False
+        self.__fifo_array = []
 
-        self.connection_listening_thread = threading.Thread(target = self.read_byte)
-        self.connection_listening_thread_running = False
-
-        self.__cmd_rcvd = [0,0,0]
-        self.__bytes_counter = 0
+        self.is_empty = True
         
-if __name__ == '__main__':
-    MainWindow = FullscreenWindow()
-    MainWindow.tk.mainloop()
+        self.__is_empty_thread = threading.Thread(target = self.__is_empty)
+        self.__is_empty_thread_running = True
+        #self.__is_empty_thread.start()
+        
+    def fifo_stop(self):
+        self.__is_empty_thread_running = False
+
+    def insert (self, data):
+        
+        self.__fifo_array.append(data)
+        self.is_empty = False
+
+    def read (self):
+
+        data = self.__fifo_array.pop(0)
+        if len(self.__fifo_array) == 0:
+            self.is_empty = True
+        else:
+            self.is_empty = False
+        return data
+
+    def __is_empty (self):
+        while self.__is_empty_thread_running:
+            
+            if len(self.__fifo_array) == 0:
+                self.is_empty = True
+            else:
+                self.is_empty = False
+
+
